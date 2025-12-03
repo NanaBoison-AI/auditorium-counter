@@ -4,7 +4,7 @@ import {
   ChevronRight, Calculator, Armchair, FolderOpen, X, Calendar, 
   Check, FileBox, Download, Lock, Unlock, LogOut, Shield, 
   KeyRound, User, UserCog, Play, Power, Building2, Loader2, Wifi,
-  UserPlus
+  UserPlus, ArrowLeft, MousePointerClick, Eye, List, PlusCircle
 } from 'lucide-react';
 
 // --- FIREBASE IMPORTS ---
@@ -44,7 +44,6 @@ const firebaseConfig = {
   messagingSenderId: "520683229850",
   appId: "1:520683229850:web:9137ecbe5df093b85e4523"
 };
-
 
 // Initialize Firebase (Singleton pattern to prevent re-init)
 const app = initializeApp(firebaseConfig);
@@ -203,12 +202,19 @@ export default function App() {
   const [extras, setExtras] = useState([]);
   const [activeSession, setActiveSession] = useState(null);
   
+  // Admin Dashboard State (New)
+  const [adminEvents, setAdminEvents] = useState([]); // List of ALL admin events
+  const [adminView, setAdminView] = useState('list'); // 'list' | 'setup' | 'monitor'
+
   // Saved Lists (Firestore Collections)
   const [savedLayouts, setSavedLayouts] = useState([]);
-  const [savedEvents, setSavedEvents] = useState([]); // For review mode
+
+  // Counter Flow State
+  const [availableEvents, setAvailableEvents] = useState([]); // Matches found during login
+  const [counterStep, setCounterStep] = useState('login'); // 'login' | 'select_event' | 'select_block' | 'counting'
+  const [selectedBlockId, setSelectedBlockId] = useState(null); // 'extras' or block.id
 
   // UI State
-  const [mode, setMode] = useState('setup'); 
   const [loginError, setLoginError] = useState('');
   
   // Inputs
@@ -229,7 +235,6 @@ export default function App() {
   const [isLayoutModalOpen, setIsLayoutModalOpen] = useState(false);
   const [isStartSessionModalOpen, setIsStartSessionModalOpen] = useState(false);
   const [isSecurityModalOpen, setIsSecurityModalOpen] = useState(false);
-  const [isReviewModalOpen, setIsReviewModalOpen] = useState(false);
   const [layoutNameInput, setLayoutNameInput] = useState('');
   const [newOrgName, setNewOrgName] = useState('');
 
@@ -242,16 +247,10 @@ export default function App() {
         
         // Determine Role based on Auth Type
         if (!currentUser.isAnonymous) {
-          // It's an Admin (Email/Pass)
           setRole('admin');
-          setMode('setup');
-          // Fetch Admin Settings
-          const docRef = doc(db, 'settings', currentUser.uid);
-          // Note: In a real app we'd fetch settings here, using default for now
+          setAdminView('list');
         } else {
-          // It's a Counter (Anonymous)
           setRole('counter');
-          setMode('counting');
         }
       } else {
         setUser(null);
@@ -259,6 +258,8 @@ export default function App() {
         setActiveSession(null);
         setBlocks([]);
         setExtras([]);
+        setCounterStep('login');
+        setAdminEvents([]);
       }
       setLoading(false);
     });
@@ -267,26 +268,32 @@ export default function App() {
 
   // --- DATA LISTENERS ---
 
-  // 1. ADMIN: Listen to Saved Layouts
+  // 1. ADMIN: Listen to Saved Layouts & All Events
   useEffect(() => {
     if (role === 'admin' && user) {
-      const q = query(collection(db, 'layouts'), where('adminId', '==', user.uid), orderBy('createdAt', 'desc'));
-      const unsub = onSnapshot(q, (snapshot) => {
-        const layouts = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-        setSavedLayouts(layouts);
+      // Layouts
+      const qLayouts = query(collection(db, 'layouts'), where('adminId', '==', user.uid), orderBy('createdAt', 'desc'));
+      const unsubLayouts = onSnapshot(qLayouts, (snapshot) => {
+        setSavedLayouts(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
       });
-      return () => unsub();
+
+      // Events (Dashboard List)
+      const qEvents = query(collection(db, 'events'), where('adminId', '==', user.uid), orderBy('createdAt', 'desc'));
+      const unsubEvents = onSnapshot(qEvents, (snapshot) => {
+        setAdminEvents(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+      });
+
+      return () => { unsubLayouts(); unsubEvents(); };
     }
   }, [role, user]);
 
-  // 2. ADMIN: Listen to their own Settings (Org Name)
+  // 2. ADMIN: Listen to Settings
   useEffect(() => {
     if (role === 'admin' && user) {
       const unsub = onSnapshot(doc(db, 'settings', user.uid), (doc) => {
         if (doc.exists()) {
           setAdminSettings(doc.data());
         } else {
-          // Initialize defaults if not exists
           setDoc(doc.ref, { orgName: 'My Organization' }, { merge: true }).catch(() => {});
         }
       });
@@ -294,48 +301,40 @@ export default function App() {
     }
   }, [role, user]);
 
-  // 3. ADMIN & COUNTER: Listen to ACTIVE SESSION (Event)
+  // 3. MONITORING: Listen to Active Session (When Admin Monitors or Counter Logs in)
   useEffect(() => {
-    // If Admin, check if they have an active event running
-    // If Counter, they are already linked to an event via login logic logic below
     let unsub;
+    // Condition: 
+    // - Counter has an ID selected
+    // - OR Admin is in 'monitor' view AND has an activeSession selected
+    const targetEventId = (role === 'counter' ? activeSession?.id : (adminView === 'monitor' ? activeSession?.id : null));
 
-    if (role === 'admin' && user) {
-      // Find event where adminId == me AND status == active
-      const q = query(collection(db, 'events'), where('adminId', '==', user.uid), where('status', '==', 'active'));
-      unsub = onSnapshot(q, (snapshot) => {
-        if (!snapshot.empty) {
-          const docData = snapshot.docs[0];
-          const event = { id: docData.id, ...docData.data() };
-          setActiveSession(event);
-          setBlocks(event.blocks || []);
-          setExtras(event.extras || []);
-        } else {
-          setActiveSession(null);
-          // If no active session, Admin sees their Draft setup? 
-          // For simplicity in this firebase transition, Admin clears when session ends.
-          // Or we could have a 'draft' collection. Leaving clean for now.
-        }
-      });
-    } 
-    else if (role === 'counter' && activeSession?.id) {
-      // Counter already has the ID from the login step, just listen to it
-      unsub = onSnapshot(doc(db, 'events', activeSession.id), (doc) => {
-        if (doc.exists() && doc.data().status === 'active') {
+    if (targetEventId) {
+      unsub = onSnapshot(doc(db, 'events', targetEventId), (doc) => {
+        if (doc.exists()) {
           const event = { id: doc.id, ...doc.data() };
           setActiveSession(event);
           setBlocks(event.blocks || []);
           setExtras(event.extras || []);
+          
+          // Counter security check
+          if (role === 'counter' && event.status !== 'active') {
+            alert("The event has ended.");
+            auth.signOut();
+          }
         } else {
-          // Event ended or deleted
-          alert("The event has ended.");
-          auth.signOut();
+          if (role === 'counter') {
+            alert("Event deleted.");
+            auth.signOut();
+          } else {
+            setAdminView('list'); // Kick admin back to list if event deleted
+          }
         }
       });
     }
 
     return () => { if (unsub) unsub(); };
-  }, [role, user, activeSession?.id]); // Re-run if role changes or counter gets an ID
+  }, [role, user, activeSession?.id, adminView]); 
 
 
   // --- ACTIONS: AUTH ---
@@ -356,7 +355,6 @@ export default function App() {
     setLoginError('');
     try {
       await createUserWithEmailAndPassword(auth, loginEmail, loginPass);
-      // Auth state listener will handle the rest
     } catch (err) {
       setLoginError("Registration failed: " + err.message);
       setLoading(false);
@@ -367,46 +365,82 @@ export default function App() {
     setLoading(true);
     setLoginError('');
     try {
-      // 1. Query for the event
+      await signInAnonymously(auth);
       const q = query(
         collection(db, 'events'), 
         where('orgName', '==', loginOrg), 
         where('passcode', '==', loginCode),
         where('status', '==', 'active')
       );
-      
       const snapshot = await getDocs(q);
       
       if (snapshot.empty) {
-        throw new Error("No active event found with these details.");
+        await signOut(auth);
+        throw new Error("No active events found with these details.");
       }
 
-      const eventDoc = snapshot.docs[0];
-      const eventData = { id: eventDoc.id, ...eventDoc.data() };
-
-      // 2. Sign in Anonymously
-      await signInAnonymously(auth);
-      
-      // 3. Set local state so the Listener picks it up
-      setActiveSession(eventData);
+      const foundEvents = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setAvailableEvents(foundEvents);
+      setRole('counter');
+      setCounterStep('select_event');
+      setLoading(false);
 
     } catch (err) {
       setLoginError(err.message);
       setLoading(false);
+      if (auth.currentUser && !user) signOut(auth);
     }
+  };
+
+  const handleCounterSelectEvent = (event) => {
+    setActiveSession(event); // Triggers the listener
+    setCounterStep('select_block');
+  };
+
+  const handleCounterSelectBlock = (blockId) => {
+    setSelectedBlockId(blockId);
+    setCounterStep('counting');
   };
 
   const handleLogout = () => {
     signOut(auth);
+    setCounterStep('login');
+    setActiveSession(null);
+    setAdminView('list');
   };
 
-  // --- ACTIONS: ADMIN SETUP ---
+  // --- ACTIONS: ADMIN EVENTS LIST ---
 
-  // NOTE: In this Firebase version, "Setup" for Admin modifies a Local State 
-  // until they hit "Start Event". 
-  // Ideally, we'd save this to a 'drafts' collection so they don't lose it on refresh.
-  // For this implementation, I will save Admin Setup to `localStorage` just like before,
-  // BUT `Start Event` will push it to Firestore.
+  const handleAdminMonitorEvent = (event) => {
+    setActiveSession(event);
+    setAdminView('monitor');
+  };
+
+  const handleAdminToggleStatus = async (e, event) => {
+    e.stopPropagation();
+    const newStatus = event.status === 'active' ? 'completed' : 'active';
+    const confirmMsg = event.status === 'active' 
+      ? "End this event? Counters will be disconnected." 
+      : "Re-activate this event?";
+    
+    if (window.confirm(confirmMsg)) {
+      await updateDoc(doc(db, 'events', event.id), { status: newStatus });
+    }
+  };
+
+  const handleAdminToggleLock = async (e, event) => {
+    e.stopPropagation();
+    await updateDoc(doc(db, 'events', event.id), { isLocked: !event.isLocked });
+  };
+
+  const handleAdminDeleteEvent = async (e, eventId) => {
+    e.stopPropagation();
+    if (window.confirm("Permanently delete this event record?")) {
+      await deleteDoc(doc(db, 'events', eventId));
+    }
+  };
+
+  // --- ACTIONS: ADMIN SETUP & CREATE ---
 
   const addBlock = () => {
     if (!newBlock.name || !newBlock.rows || !newBlock.seatsPerRow) return;
@@ -429,13 +463,10 @@ export default function App() {
 
   const removeExtra = (id) => setExtras(extras.filter(e => e.id !== id));
 
-  // --- ACTIONS: SESSION MANAGEMENT ---
-
-  const handleStartSession = async () => {
+  const handleCreateEvent = async () => {
     if (!sessionNameInput || !sessionPasscodeInput) return;
     
     try {
-      // Create new Event Document
       const newEvent = {
         adminId: user.uid,
         orgName: adminSettings.orgName,
@@ -444,52 +475,29 @@ export default function App() {
         status: 'active',
         isLocked: false,
         createdAt: serverTimestamp(),
-        blocks: blocks, // The current setup
+        blocks: blocks, 
         extras: extras
       };
 
-      await addDoc(collection(db, 'events'), newEvent);
+      const docRef = await addDoc(collection(db, 'events'), newEvent);
       setIsStartSessionModalOpen(false);
-      setMode('counting');
       setSessionNameInput('');
       setSessionPasscodeInput('');
+      
+      // Auto-switch to monitor newly created event
+      // We need the ID, so we create object manually or wait for listener. 
+      // Safe bet: switch to list or monitor. Let's switch to monitor.
+      // Ideally we'd set activeSession immediately but the listener might race.
+      // Let's go to list view so they see it created.
+      setAdminView('list');
+      
     } catch (e) {
       alert("Error starting event: " + e.message);
     }
   };
 
-  const handleEndSession = async () => {
-    if (!activeSession) return;
-    if (window.confirm("End event? Counters will be logged out.")) {
-      try {
-        await updateDoc(doc(db, 'events', activeSession.id), {
-          status: 'completed',
-          endedAt: serverTimestamp()
-        });
-        setMode('setup');
-        // Clear local blocks to allow new setup
-        setBlocks([]);
-        setExtras([]);
-      } catch (e) {
-        alert("Error ending session: " + e.message);
-      }
-    }
-  };
-
-  const toggleLock = async () => {
-    if (!activeSession) return;
-    try {
-      await updateDoc(doc(db, 'events', activeSession.id), {
-        isLocked: !activeSession.isLocked
-      });
-    } catch (e) {
-      console.error("Lock toggle failed", e);
-    }
-  };
-
   // --- ACTIONS: COUNTING (REAL-TIME WRITES) ---
 
-  // We debounce these updates to avoid hammering Firestore
   const debouncedUpdateBlock = useDebounceWrite(async (eventId, newBlocks) => {
     const eventRef = doc(db, 'events', eventId);
     await updateDoc(eventRef, { blocks: newBlocks });
@@ -498,7 +506,6 @@ export default function App() {
   const updateBlockCount = (blockId, rowIndex, value) => {
     if (activeSession?.isLocked) return;
     
-    // Optimistic Update (UI updates immediately)
     const val = value === '' ? 0 : parseInt(value);
     const newBlocks = blocks.map(b => {
       if (b.id === blockId) {
@@ -510,7 +517,6 @@ export default function App() {
     });
     setBlocks(newBlocks);
 
-    // Persist to Firestore
     if (activeSession) {
       debouncedUpdateBlock(activeSession.id, newBlocks);
     }
@@ -542,7 +548,6 @@ export default function App() {
 
   const handleSaveLayout = async () => {
     if (!layoutNameInput.trim()) return;
-    // Strip counts
     const cleanBlocks = blocks.map(({ id, name, rows, seatsPerRow }) => ({ id, name, rows, seatsPerRow }));
     const cleanExtras = extras.map(({ id, name }) => ({ id, name }));
     
@@ -562,10 +567,6 @@ export default function App() {
   };
 
   const handleLoadLayout = (layout) => {
-    if (activeSession) {
-      alert("Cannot load template while event is active.");
-      return;
-    }
     // Reconstitute with IDs and zero counts
     const newBlocks = layout.blocks.map(b => ({
       ...b, id: Date.now() + Math.random(), counts: Array(b.rows).fill(0)
@@ -588,9 +589,6 @@ export default function App() {
     if (newOrgName.trim()) {
       try {
         const settingsRef = doc(db, 'settings', user.uid);
-        // We use setDoc with merge:true in case it doesnt exist, but here we just used updateDoc in logic
-        // Let's safe bet with setDoc pattern or just updateDoc if we know it exists
-        // Simplest for now:
         await updateDoc(settingsRef, { orgName: newOrgName });
         alert("Organization Name updated.");
         setIsSecurityModalOpen(false);
@@ -605,6 +603,7 @@ export default function App() {
   const getBlockCapacity = (block) => block.rows * block.seatsPerRow;
   const getExtrasTotal = () => extras.reduce((sum, extra) => sum + (parseInt(extra.count) || 0), 0);
   const getGrandTotal = () => blocks.reduce((sum, block) => sum + getBlockTotal(block), 0) + getExtrasTotal();
+  const getTotalCapacity = () => blocks.reduce((sum, block) => sum + getBlockCapacity(block), 0);
 
   // --- VIEW RENDERING ---
 
@@ -612,35 +611,124 @@ export default function App() {
     return <div className="min-h-screen flex items-center justify-center bg-slate-100 text-indigo-600"><Loader2 className="animate-spin" size={48} /></div>;
   }
 
-  if (!user) {
-    return (
-      <LoginView 
-        emailInput={loginEmail} setEmailInput={setLoginEmail}
-        passwordInput={loginPass} setPasswordInput={setLoginPass}
-        orgInput={loginOrg} setOrgInput={setLoginOrg}
-        passcodeInput={loginCode} setPasscodeInput={setLoginCode}
-        handleAdminLogin={handleAdminLogin}
-        handleAdminRegister={handleAdminRegister} 
-        handleCounterLogin={handleCounterLogin}
-        loading={loading} error={loginError}
-      />
-    );
-  }
+  // --- 1. ADMIN: EVENTS LIST VIEW ---
+  const renderAdminEventsList = () => (
+    <div className="space-y-6 animate-fade-in">
+      <div className="flex justify-between items-center bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+        <div>
+          <h2 className="text-xl font-bold text-slate-900">Manage Events</h2>
+          <p className="text-sm text-slate-500">View and control all your counting sessions.</p>
+        </div>
+        <button 
+          onClick={() => { setAdminView('setup'); setBlocks([]); setExtras([]); }} // Clear blocks for clean setup
+          className="bg-indigo-600 text-white px-4 py-2.5 rounded-lg hover:bg-indigo-700 transition flex items-center gap-2 font-medium shadow-sm"
+        >
+          <PlusCircle size={20} /> Create New Event
+        </button>
+      </div>
 
-  // --- ADMIN SETUP VIEW ---
+      <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
+        {adminEvents.length === 0 ? (
+          <div className="p-12 text-center text-slate-400">
+            <Calendar size={48} className="mx-auto mb-3 opacity-20" />
+            <p>No events found. Create your first event to get started.</p>
+          </div>
+        ) : (
+          <div className="divide-y divide-slate-100">
+            {adminEvents.map(event => {
+              // Calculate specific totals for this event row
+              const rowTotal = event.blocks.reduce((sum, b) => sum + (b.counts?.reduce((s, v) => s + (parseInt(v)||0), 0) || 0), 0) 
+                             + (event.extras?.reduce((s, e) => s + (parseInt(e.count)||0), 0) || 0);
+              
+              return (
+                <div 
+                  key={event.id} 
+                  onClick={() => handleAdminMonitorEvent(event)}
+                  className="p-6 hover:bg-slate-50 transition cursor-pointer group flex flex-col md:flex-row md:items-center justify-between gap-4"
+                >
+                  <div className="flex-1">
+                    <div className="flex items-center gap-2 mb-1">
+                      <h3 className="font-bold text-slate-800 text-lg group-hover:text-indigo-600 transition">{event.name}</h3>
+                      {event.status === 'active' ? (
+                        <span className="bg-emerald-100 text-emerald-700 text-xs px-2 py-0.5 rounded-full font-bold uppercase tracking-wide flex items-center gap-1">
+                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span> Live
+                        </span>
+                      ) : (
+                        <span className="bg-slate-100 text-slate-500 text-xs px-2 py-0.5 rounded-full font-bold uppercase tracking-wide">Completed</span>
+                      )}
+                      {event.isLocked && <Lock size={14} className="text-red-400" />}
+                    </div>
+                    <div className="flex items-center gap-4 text-xs text-slate-500 font-mono">
+                      <span>Code: <span className="bg-slate-100 px-1 rounded text-slate-700 font-bold">{event.passcode}</span></span>
+                      <span>•</span>
+                      <span>Created: {new Date(event.createdAt?.seconds * 1000).toLocaleDateString()}</span>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-6">
+                    <div className="text-right hidden sm:block">
+                      <div className="text-2xl font-mono font-bold text-slate-700">{rowTotal}</div>
+                      <div className="text-xs text-slate-400">Total Count</div>
+                    </div>
+
+                    <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                      <button 
+                        onClick={(e) => handleAdminToggleLock(e, event)}
+                        className={`p-2 rounded-lg border transition ${event.isLocked ? 'bg-red-50 border-red-200 text-red-600' : 'bg-white border-slate-200 text-slate-400 hover:text-slate-600'}`}
+                        title={event.isLocked ? "Unlock Event" : "Lock Event"}
+                      >
+                        {event.isLocked ? <Unlock size={18} /> : <Lock size={18} />}
+                      </button>
+                      
+                      <button 
+                        onClick={(e) => handleAdminToggleStatus(e, event)}
+                        className={`p-2 rounded-lg border transition ${event.status === 'active' ? 'bg-white border-slate-200 text-emerald-600 hover:bg-emerald-50' : 'bg-white border-slate-200 text-slate-400 hover:text-emerald-600'}`}
+                        title={event.status === 'active' ? "End Event" : "Re-activate Event"}
+                      >
+                        {event.status === 'active' ? <Power size={18} /> : <Play size={18} />}
+                      </button>
+
+                      <button 
+                        onClick={(e) => handleAdminDeleteEvent(e, event.id)}
+                        className="p-2 rounded-lg border border-slate-200 text-slate-400 hover:text-red-600 hover:bg-red-50 transition"
+                        title="Delete Event"
+                      >
+                        <Trash2 size={18} />
+                      </button>
+                      
+                      <button 
+                        onClick={() => handleAdminMonitorEvent(event)}
+                        className="bg-indigo-50 text-indigo-600 px-3 py-2 rounded-lg font-medium text-sm hover:bg-indigo-100 transition flex items-center gap-2"
+                      >
+                        <Eye size={18} /> Open
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+
+  // --- 2. ADMIN: SETUP VIEW (Create New) ---
   const renderSetupView = () => (
     <div className="space-y-8 animate-fade-in">
       <div className="flex justify-between items-center bg-indigo-50 p-4 rounded-xl border border-indigo-100">
-        <div>
-          <h2 className="text-lg font-bold text-indigo-900">Auditorium Layout</h2>
-          <p className="text-sm text-indigo-600">Prepare your layout below.</p>
+        <div className="flex items-center gap-3">
+          <button onClick={() => setAdminView('list')} className="p-2 bg-white rounded-lg text-indigo-600 hover:bg-indigo-50"><ArrowLeft size={20}/></button>
+          <div>
+            <h2 className="text-lg font-bold text-indigo-900">New Event Layout</h2>
+            <p className="text-sm text-indigo-600">Design the seating structure.</p>
+          </div>
         </div>
-        <button 
-          onClick={() => setIsLayoutModalOpen(true)}
-          className="bg-white text-indigo-700 border border-indigo-200 px-4 py-2 rounded-lg hover:bg-indigo-100 transition flex items-center gap-2 font-medium shadow-sm"
-        >
-          <FileBox size={18} /> Manage Templates
-        </button>
+        <div className="flex gap-2">
+          <button onClick={() => setIsLayoutModalOpen(true)} className="bg-white text-indigo-700 border border-indigo-200 px-4 py-2 rounded-lg hover:bg-indigo-100 transition flex items-center gap-2 font-medium shadow-sm"><FileBox size={18} /> Templates</button>
+          {/* Start Session Button moved here for clarity */}
+          <button onClick={() => setIsStartSessionModalOpen(true)} className="bg-emerald-600 text-white px-4 py-2 rounded-lg hover:bg-emerald-700 transition flex items-center gap-2 font-medium shadow-sm"><Play size={18} fill="currentColor" /> Start Event</button>
+        </div>
       </div>
 
       {/* Block Setup Form */}
@@ -676,7 +764,7 @@ export default function App() {
     </div>
   );
 
-  // --- COUNTING VIEW ---
+  // --- 3. ADMIN: COUNTING/MONITOR VIEW ---
   const renderCountingView = () => {
     const totalCount = getGrandTotal();
     const capacity = getTotalCapacity();
@@ -685,6 +773,16 @@ export default function App() {
 
     return (
       <div className="space-y-6 animate-fade-in">
+        {role === 'admin' && (
+          <div className="flex items-center gap-3 mb-2">
+            <button onClick={() => setAdminView('list')} className="p-2 bg-white rounded-lg text-slate-600 hover:bg-slate-100 border border-slate-200 shadow-sm"><ArrowLeft size={20}/></button>
+            <div>
+              <h2 className="text-xl font-bold text-slate-800">{activeSession?.name}</h2>
+              <p className="text-xs text-slate-500">Monitoring Mode</p>
+            </div>
+          </div>
+        )}
+
         <div className="bg-slate-900 text-white p-6 rounded-2xl shadow-lg flex flex-col md:flex-row justify-between items-center">
           <div>
             <h2 className="text-slate-400 text-sm font-medium uppercase tracking-wider mb-1 flex items-center gap-2">Total Attendance {isLocked && <Lock size={14} className="text-red-400" />}</h2>
@@ -734,6 +832,172 @@ export default function App() {
     );
   };
 
+  // --- COUNTER VIEWS (UNCHANGED) ---
+  const renderCounterEventSelect = () => (
+    <div className="max-w-md mx-auto space-y-6 animate-fade-in p-4">
+      <div className="text-center">
+        <h2 className="text-xl font-bold text-slate-800">Select Event</h2>
+        <p className="text-sm text-slate-500">Found {availableEvents.length} active event(s)</p>
+      </div>
+      <div className="space-y-3">
+        {availableEvents.map(event => (
+          <button 
+            key={event.id}
+            onClick={() => handleCounterSelectEvent(event)}
+            className="w-full bg-white p-4 rounded-xl border border-slate-200 shadow-sm hover:border-indigo-500 hover:ring-1 hover:ring-indigo-500 transition flex items-center justify-between group"
+          >
+            <div className="text-left">
+              <h3 className="font-bold text-slate-800">{event.name}</h3>
+              <p className="text-xs text-slate-500">{new Date(event.createdAt?.seconds * 1000).toLocaleDateString()}</p>
+            </div>
+            <ChevronRight className="text-slate-400 group-hover:text-indigo-500" />
+          </button>
+        ))}
+      </div>
+      <button onClick={handleLogout} className="w-full py-3 text-slate-500 hover:text-slate-800 text-sm">Back to Login</button>
+    </div>
+  );
+
+  const renderCounterBlockSelect = () => (
+    <div className="max-w-md mx-auto space-y-6 animate-fade-in p-4">
+      <div className="flex items-center gap-2 mb-4">
+        <button onClick={() => setCounterStep('select_event')} className="p-2 -ml-2 text-slate-400 hover:text-slate-800"><ArrowLeft size={20} /></button>
+        <div>
+          <h2 className="text-xl font-bold text-slate-800">Choose Section</h2>
+          <p className="text-xs text-slate-500">{activeSession?.name}</p>
+        </div>
+      </div>
+      
+      <div className="space-y-3">
+        {blocks.map(block => (
+          <button 
+            key={block.id}
+            onClick={() => handleCounterSelectBlock(block.id)}
+            className="w-full bg-white p-4 rounded-xl border border-slate-200 shadow-sm hover:border-indigo-500 hover:ring-1 hover:ring-indigo-500 transition flex items-center justify-between group"
+          >
+            <div className="flex items-center gap-3">
+              <div className="bg-indigo-50 p-2 rounded-lg text-indigo-600"><Armchair size={20} /></div>
+              <div className="text-left">
+                <h3 className="font-bold text-slate-800">{block.name}</h3>
+                <p className="text-xs text-slate-500">{getBlockTotal(block)} counted</p>
+              </div>
+            </div>
+            <MousePointerClick className="text-slate-300 group-hover:text-indigo-500" />
+          </button>
+        ))}
+
+        {extras.length > 0 && (
+          <button 
+            onClick={() => handleCounterSelectBlock('extras')}
+            className="w-full bg-white p-4 rounded-xl border border-slate-200 shadow-sm hover:border-emerald-500 hover:ring-1 hover:ring-emerald-500 transition flex items-center justify-between group"
+          >
+            <div className="flex items-center gap-3">
+              <div className="bg-emerald-50 p-2 rounded-lg text-emerald-600"><Users size={20} /></div>
+              <div className="text-left">
+                <h3 className="font-bold text-slate-800">Other Areas</h3>
+                <p className="text-xs text-slate-500">{getExtrasTotal()} counted</p>
+              </div>
+            </div>
+            <MousePointerClick className="text-slate-300 group-hover:text-emerald-500" />
+          </button>
+        )}
+      </div>
+    </div>
+  );
+
+  const renderCounterFocusedView = () => {
+    const isExtras = selectedBlockId === 'extras';
+    const targetBlock = !isExtras ? blocks.find(b => b.id === selectedBlockId) : null;
+    const isLocked = activeSession?.isLocked;
+
+    if (!targetBlock && !isExtras) return <div>Block not found</div>;
+
+    return (
+      <div className="max-w-md mx-auto space-y-6 animate-fade-in p-4">
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-2">
+            <button onClick={() => setCounterStep('select_block')} className="p-2 -ml-2 text-slate-400 hover:text-slate-800"><ArrowLeft size={20} /></button>
+            <div>
+              <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2">
+                {isExtras ? 'Other Areas' : targetBlock.name}
+                {isLocked && <Lock size={16} className="text-red-500" />}
+              </h2>
+              <p className="text-xs text-slate-500">{activeSession?.name}</p>
+            </div>
+          </div>
+          <div className="text-right">
+            <div className="text-2xl font-mono font-bold text-slate-800">
+              {isExtras ? getExtrasTotal() : getBlockTotal(targetBlock)}
+            </div>
+            <div className="text-xs text-slate-400">Total</div>
+          </div>
+        </div>
+
+        <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+          <div className="p-4 space-y-4">
+            {isExtras ? (
+              extras.map(e => (
+                <div key={e.id} className="flex justify-between gap-4 items-center">
+                  <label className="text-lg font-medium text-slate-700 flex-1">{e.name}</label>
+                  <input 
+                    type="number" min="0" disabled={isLocked}
+                    className="w-32 bg-slate-50 border border-slate-200 rounded-lg px-4 py-3 font-mono text-xl text-right outline-none focus:ring-2 focus:ring-emerald-500 disabled:opacity-50" 
+                    value={e.count || ''} placeholder="0" 
+                    onChange={(evt) => updateExtraCount(e.id, evt.target.value)} 
+                  />
+                </div>
+              ))
+            ) : (
+              targetBlock.counts.map((count, idx) => (
+                <div key={idx} className="flex items-center gap-4 border-b border-slate-100 last:border-0 pb-4 last:pb-0">
+                  <span className="w-20 text-sm font-bold text-slate-400 uppercase tracking-wide">Row {idx + 1}</span>
+                  <input 
+                    type="number" min="0" disabled={isLocked}
+                    className="flex-1 bg-slate-50 border border-slate-200 rounded-lg px-4 py-3 font-mono text-xl outline-none focus:ring-2 focus:ring-indigo-500 disabled:opacity-50"
+                    value={count || ''} placeholder="0"
+                    onChange={(e) => updateBlockCount(targetBlock.id, idx, e.target.value)}
+                  />
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  // --- MAIN RENDER ROUTER ---
+  const renderContent = () => {
+    if (role === 'admin') {
+      if (adminView === 'setup') return renderSetupView();
+      if (adminView === 'monitor') return renderCountingView();
+      return renderAdminEventsList();
+    }
+    
+    // Counter Flow
+    if (counterStep === 'select_event') return renderCounterEventSelect();
+    if (counterStep === 'select_block') return renderCounterBlockSelect();
+    if (counterStep === 'counting') return renderCounterFocusedView();
+    
+    return null; 
+  };
+
+  // --- LOGIN CHECK ---
+  if (!user && counterStep === 'login') {
+    return (
+      <LoginView 
+        emailInput={loginEmail} setEmailInput={setLoginEmail}
+        passwordInput={loginPass} setPasswordInput={setLoginPass}
+        orgInput={loginOrg} setOrgInput={setLoginOrg}
+        passcodeInput={loginCode} setPasscodeInput={setLoginCode}
+        handleAdminLogin={handleAdminLogin}
+        handleAdminRegister={handleAdminRegister} 
+        handleCounterLogin={handleCounterLogin}
+        loading={loading} error={loginError}
+      />
+    );
+  }
+
   // --- HEADER & NAVIGATION ---
   return (
     <div className="min-h-screen bg-slate-100 text-slate-800 pb-20 font-sans selection:bg-indigo-100 selection:text-indigo-900">
@@ -745,28 +1009,19 @@ export default function App() {
               <h1 className="text-xl font-bold tracking-tight text-slate-900 hidden sm:block">Auditorium Counter</h1>
               <div className="flex items-center gap-2">
                 <p className="text-xs text-slate-500 font-medium">{role === 'admin' ? 'Administrator' : 'Counter Staff'}</p>
-                {activeSession && <span className="text-xs bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full font-bold flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>{activeSession.name} ({activeSession.orgName})</span>}
+                {activeSession && role === 'counter' && <span className="text-xs bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full font-bold flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>{activeSession.name} ({activeSession.orgName})</span>}
               </div>
             </div>
           </div>
           
           <div className="flex items-center gap-2">
-            {role === 'admin' && !activeSession && (
-              <button onClick={() => setIsStartSessionModalOpen(true)} className="bg-emerald-600 text-white px-3 py-2 rounded-lg hover:bg-emerald-700 transition flex items-center gap-2 text-sm font-medium shadow-sm animate-pulse"><Play size={18} fill="currentColor" /><span className="hidden sm:inline">Start Event</span></button>
-            )}
-            
-            {role === 'admin' && activeSession && (
-               <button onClick={handleEndSession} className="bg-slate-100 text-slate-600 border border-slate-200 px-3 py-2 rounded-lg hover:bg-red-50 hover:text-red-600 hover:border-red-200 transition flex items-center gap-2 text-sm font-medium shadow-sm"><Power size={18} /><span className="hidden sm:inline">End Event</span></button>
-            )}
-
-            {role === 'admin' && activeSession && (
-              <button onClick={toggleLock} className={`px-3 py-2 rounded-lg transition flex items-center gap-2 text-sm font-medium shadow-sm border ${activeSession.isLocked ? 'bg-red-50 border-red-200 text-red-600' : 'bg-white border-slate-300 text-slate-700'}`}>
-                {activeSession.isLocked ? <Unlock size={18} /> : <Lock size={18} />}<span className="hidden sm:inline">{activeSession.isLocked ? "Unlock" : "Lock"}</span>
-              </button>
-            )}
-
             {role === 'admin' && (
-              <button onClick={() => setIsSecurityModalOpen(true)} className="bg-white border border-slate-300 text-slate-700 px-3 py-2 rounded-lg hover:bg-slate-50 transition flex items-center gap-2 text-sm font-medium shadow-sm"><Shield size={18} /></button>
+              <>
+                <button onClick={() => setAdminView('list')} className={`px-3 py-2 rounded-lg transition flex items-center gap-2 text-sm font-medium shadow-sm ${adminView === 'list' ? 'bg-indigo-50 text-indigo-600' : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-50'}`}>
+                  <List size={18} /> <span className="hidden sm:inline">Events</span>
+                </button>
+                <button onClick={() => setIsSecurityModalOpen(true)} className="bg-white border border-slate-300 text-slate-700 px-3 py-2 rounded-lg hover:bg-slate-50 transition flex items-center gap-2 text-sm font-medium shadow-sm"><Shield size={18} /></button>
+              </>
             )}
             
             <button onClick={handleLogout} className="ml-2 text-slate-400 hover:text-red-500 transition"><LogOut size={20} /></button>
@@ -775,7 +1030,7 @@ export default function App() {
       </header>
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 py-8">
-        {role === 'admin' && !activeSession ? renderSetupView() : renderCountingView()}
+        {renderContent()}
       </main>
 
       {/* --- MODALS --- */}
@@ -788,7 +1043,7 @@ export default function App() {
             <div className="p-6 space-y-4">
               <div><label className="block text-xs font-bold text-slate-500 uppercase mb-1">Event Name</label><input type="text" className="w-full border rounded-lg px-4 py-2" value={sessionNameInput} onChange={(e) => setSessionNameInput(e.target.value)} /></div>
               <div><label className="block text-xs font-bold text-slate-500 uppercase mb-1">Passcode</label><input type="text" className="w-full border rounded-lg px-4 py-2 font-mono" value={sessionPasscodeInput} onChange={(e) => setSessionPasscodeInput(e.target.value)} /></div>
-              <button onClick={handleStartSession} className="w-full py-3 rounded-lg bg-emerald-600 text-white font-medium hover:bg-emerald-700">Start Counting</button>
+              <button onClick={handleCreateEvent} className="w-full py-3 rounded-lg bg-emerald-600 text-white font-medium hover:bg-emerald-700">Create & Start</button>
             </div>
           </div>
         </div>
