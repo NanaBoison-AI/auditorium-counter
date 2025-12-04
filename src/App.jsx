@@ -716,20 +716,40 @@ export default function App() {
   // --- 2. ADMIN: SETUP VIEW (Create New) ---
   const renderSetupView = () => (
     <div className="space-y-8 animate-fade-in">
-      <div className="flex justify-between items-center bg-indigo-50 p-4 rounded-xl border border-indigo-100">
+      <div className="flex flex-col md:flex-row md:justify-between md:items-center bg-indigo-50 p-4 rounded-xl border border-indigo-100 gap-4">
+        {/* Left section */}
         <div className="flex items-center gap-3">
-          <button onClick={() => setAdminView('list')} className="p-2 bg-white rounded-lg text-indigo-600 hover:bg-indigo-50"><ArrowLeft size={20}/></button>
+          <button 
+            onClick={() => setAdminView('list')} 
+            className="p-2 bg-white rounded-lg text-indigo-600 hover:bg-indigo-50"
+          >
+            <ArrowLeft size={20}/>
+          </button>
+
           <div>
             <h2 className="text-lg font-bold text-indigo-900">New Event Layout</h2>
             <p className="text-sm text-indigo-600">Design the seating structure.</p>
           </div>
         </div>
-        <div className="flex gap-2">
-          <button onClick={() => setIsLayoutModalOpen(true)} className="bg-white text-indigo-700 border border-indigo-200 px-4 py-2 rounded-lg hover:bg-indigo-100 transition flex items-center gap-2 font-medium shadow-sm"><FileBox size={18} /> Templates</button>
-          {/* Start Session Button moved here for clarity */}
-          <button onClick={() => setIsStartSessionModalOpen(true)} className="bg-emerald-600 text-white px-4 py-2 rounded-lg hover:bg-emerald-700 transition flex items-center gap-2 font-medium shadow-sm"><Play size={18} fill="currentColor" /> Start Event</button>
+
+        {/* Right section (buttons) */}
+        <div className="flex flex-col sm:flex-row gap-3 w-full md:w-auto">
+          <button 
+            onClick={() => setIsLayoutModalOpen(true)} 
+            className="bg-white text-indigo-700 border border-indigo-200 px-4 py-2 rounded-lg hover:bg-indigo-100 transition flex items-center justify-center gap-2 font-medium shadow-sm"
+          >
+            <FileBox size={18}/> Templates
+          </button>
+
+          <button 
+            onClick={() => setIsStartSessionModalOpen(true)} 
+            className="bg-emerald-600 text-white px-4 py-2 rounded-lg hover:bg-emerald-700 transition flex items-center justify-center gap-2 font-medium shadow-sm"
+          >
+            <Play size={18} fill="currentColor" /> Start Event
+          </button>
         </div>
       </div>
+
 
       {/* Block Setup Form */}
       <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
@@ -751,15 +771,46 @@ export default function App() {
       </div>
 
       {/* Extras Setup Form */}
-      <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
-        <h2 className="text-xl font-semibold text-slate-800 mb-4 flex items-center"><Users className="w-5 h-5 mr-2 text-emerald-600" /> Define Other Areas</h2>
-        <div className="flex gap-4 mb-6">
-          <input type="text" placeholder="Area Name" className="flex-1 border border-slate-300 rounded-lg px-4 py-2 outline-none focus:ring-2 focus:ring-emerald-500" value={newExtra.name} onChange={(e) => setNewExtra({...newExtra, name: e.target.value})} />
-          <button onClick={addExtra} className="bg-emerald-600 text-white px-6 py-2 rounded-lg hover:bg-emerald-700 transition flex items-center gap-2"><Plus size={18} /> Add</button>
+      <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200 w-full">
+        <h2 className="text-xl font-semibold text-slate-800 mb-4 flex items-center">
+          <Users className="w-5 h-5 mr-2 text-emerald-600" /> Define Other Areas
+        </h2>
+
+        {/* Input + button responsive */}
+        <div className="flex flex-col md:flex-row gap-4 mb-6">
+          <input
+            type="text"
+            placeholder="Area Name"
+            className="flex-1 border border-slate-300 rounded-lg px-4 py-2 outline-none focus:ring-2 focus:ring-emerald-500"
+            value={newExtra.name}
+            onChange={(e) => setNewExtra({ ...newExtra, name: e.target.value })}
+          />
+
+          <button
+            onClick={addExtra}
+            className="bg-emerald-600 text-white px-6 py-2 rounded-lg hover:bg-emerald-700 transition flex items-center justify-center gap-2 md:w-auto w-full"
+          >
+            <Plus size={18} /> Add
+          </button>
         </div>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">{extras.map(e => (
-          <div key={e.id} className="bg-emerald-50 p-4 rounded-lg border border-emerald-100 flex justify-between"><span className="font-medium text-emerald-900">{e.name}</span><button onClick={() => removeExtra(e.id)} className="text-emerald-400 hover:text-red-500"><Trash2 size={18} /></button></div>
-        ))}</div>
+
+        {/* Items grid */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          {extras.map(e => (
+            <div
+              key={e.id}
+              className="bg-emerald-50 p-4 rounded-lg border border-emerald-100 flex justify-between"
+            >
+              <span className="font-medium text-emerald-900">{e.name}</span>
+              <button
+                onClick={() => removeExtra(e.id)}
+                className="text-emerald-400 hover:text-red-500"
+              >
+                <Trash2 size={18} />
+              </button>
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   );
