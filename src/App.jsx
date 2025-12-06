@@ -248,6 +248,65 @@ export default function App() {
   const [layoutNameInput, setLayoutNameInput] = useState('');
   const [newOrgName, setNewOrgName] = useState('');
 
+  // --- REUSABLE FETCH FUNCTION FOR COUNTERS ---
+  const fetchCounterEvents = async (org, code) => {
+    setLoading(true);
+    try {
+      const q = query(
+        collection(db, 'events'), 
+        where('orgName', '==', org), 
+        where('passcode', '==', code),
+        where('status', '==', 'active')
+      );
+      
+      const snapshot = await getDocs(q);
+      
+      if (!snapshot.empty) {
+        const foundEvents = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        setAvailableEvents(foundEvents);
+        setCounterStep('select_event');
+        // Reset specific selections to force fresh choice
+        setActiveSession(null);
+        setSelectedBlockId(null);
+      } else {
+        // If we can't find events, credentials might be stale or event ended.
+        // Log them out to prevent stuck blank screen.
+        await signOut(auth);
+      }
+    } catch (err) {
+      console.error("Failed to fetch events on refresh:", err);
+      // await signOut(auth); // Optional: stay logged in but show error? 
+    }
+    setLoading(false);
+  };
+
+  // --- PERSISTENCE & RESTORATION (Standard) ---
+  useEffect(() => {
+    // Restore persistent state on load (Only Admin/Setup related)
+    const savedBlocks = localStorage.getItem('auditorium_blocks');
+    const savedExtras = localStorage.getItem('auditorium_extras');
+    const savedHistory = localStorage.getItem('auditorium_saves');
+    const savedLayoutTemplates = localStorage.getItem('auditorium_layouts');
+    
+    // Auth Persistence (Admin only mostly, Counter handled via login flow)
+    const savedAdminPin = localStorage.getItem('auditorium_admin_pin');
+
+    if (savedBlocks) setBlocks(JSON.parse(savedBlocks));
+    if (savedExtras) setExtras(JSON.parse(savedExtras));
+    if (savedHistory) setSavedEvents(JSON.parse(savedHistory));
+    if (savedLayoutTemplates) setSavedLayouts(JSON.parse(savedLayoutTemplates));
+    
+  }, []);
+
+  // Save state on change (Admin/Setup Only)
+  useEffect(() => {
+    // We only persist these for the "Draft" setup view. 
+    // Live data is in Firestore.
+    localStorage.setItem('auditorium_blocks', JSON.stringify(blocks));
+    localStorage.setItem('auditorium_extras', JSON.stringify(extras));
+  }, [blocks, extras]);
+
+
   // --- AUTH LISTENER ---
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
@@ -255,12 +314,27 @@ export default function App() {
       if (currentUser) {
         setUser(currentUser);
         if (!currentUser.isAnonymous) {
+          // ADMIN
           setRole('admin');
           setAdminView('list');
         } else {
+          // COUNTER
           setRole('counter');
+          
+          // Check for saved credentials to restore session
+          const savedCreds = localStorage.getItem('auditorium_counter_creds');
+          if (savedCreds) {
+            const { org, code } = JSON.parse(savedCreds);
+            // Refresh: Re-fetch active events and go to list
+            await fetchCounterEvents(org, code);
+          } else {
+            // No saved creds? Shouldn't happen if they logged in properly, 
+            // but if so, logout to be safe.
+            signOut(auth);
+          }
         }
       } else {
+        // LOGGED OUT
         setUser(null);
         setRole(null);
         setActiveSession(null);
@@ -268,6 +342,7 @@ export default function App() {
         setExtras([]);
         setCounterStep('login');
         setAdminEvents([]);
+        setAvailableEvents([]);
       }
       setLoading(false);
     });
@@ -362,25 +437,14 @@ export default function App() {
     setLoading(true);
     setLoginError('');
     try {
+      // 1. Sign In
       await signInAnonymously(auth);
-      const q = query(
-        collection(db, 'events'), 
-        where('orgName', '==', loginOrg), 
-        where('passcode', '==', loginCode),
-        where('status', '==', 'active')
-      );
-      const snapshot = await getDocs(q);
       
-      if (snapshot.empty) {
-        await signOut(auth);
-        throw new Error("No active events found with these details.");
-      }
+      // 2. Save Credentials for Refresh
+      localStorage.setItem('auditorium_counter_creds', JSON.stringify({ org: loginOrg, code: loginCode }));
 
-      const foundEvents = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      setAvailableEvents(foundEvents);
-      setRole('counter');
-      setCounterStep('select_event');
-      setLoading(false);
+      // 3. Fetch Events
+      await fetchCounterEvents(loginOrg, loginCode);
 
     } catch (err) {
       setLoginError(err.message);
@@ -406,6 +470,9 @@ export default function App() {
     setAdminView('list');
     setEditingLayoutId(null);
     setEditingBlockId(null);
+    setAvailableEvents([]);
+    // Clear counter creds on explicit logout
+    localStorage.removeItem('auditorium_counter_creds');
   };
 
   // --- ACTIONS: ADMIN EVENTS LIST ---
@@ -1066,6 +1133,17 @@ export default function App() {
 
   const renderCounterBlockSelect = () => (
     <div className="max-w-md mx-auto space-y-6 animate-fade-in p-4">
+      {/* Total Count Header Added */}
+      <div className="bg-slate-900 text-white p-6 rounded-2xl shadow-lg flex flex-col md:flex-row justify-between items-center mb-6">
+        <div>
+          <h2 className="text-slate-400 text-xs sm:text-sm font-medium uppercase tracking-wider mb-1 flex items-center gap-2">
+            Total Attendance {activeSession?.isLocked && <Lock size={14} className="text-red-400" />}
+          </h2>
+          <div className="text-3xl sm:text-4xl md:text-5xl font-bold font-mono tracking-tight">{getGrandTotal().toLocaleString()}</div>
+          {getTotalCapacity() > 0 && <div className="text-slate-400 text-xs sm:text-sm mt-2">Capacity: {getTotalCapacity().toLocaleString()} ({Math.round((getGrandTotal() / getTotalCapacity()) * 100)}% full)</div>}
+        </div>
+      </div>
+
       <div className="flex items-center gap-2 mb-4">
         <button onClick={() => setCounterStep('select_event')} className="p-2 -ml-2 text-slate-400 hover:text-slate-800"><ArrowLeft size={20} /></button>
         <div>
@@ -1085,7 +1163,7 @@ export default function App() {
               <div className="bg-indigo-50 p-2 rounded-lg text-indigo-600"><Armchair size={20} /></div>
               <div className="text-left">
                 <h3 className="font-bold text-slate-800">{block.name}</h3>
-                <p className="text-xs text-slate-500">{getBlockTotal(block)} counted</p>
+                <p className="text-xs text-slate-500">{getBlockTotal(block)} / {getBlockCapacity(block)} counted</p>
               </div>
             </div>
             <MousePointerClick className="text-slate-300 group-hover:text-indigo-500" />
@@ -1134,6 +1212,7 @@ export default function App() {
           <div className="text-right">
             <div className="text-xl sm:text-2xl font-mono font-bold text-slate-800">
               {isExtras ? getExtrasTotal() : getBlockTotal(targetBlock)}
+              {!isExtras && <span className="text-sm text-slate-400 font-normal ml-1">/ {getBlockCapacity(targetBlock)}</span>}
             </div>
             <div className="text-xs text-slate-400">Total</div>
           </div>
@@ -1157,12 +1236,22 @@ export default function App() {
               targetBlock.counts.map((count, idx) => (
                 <div key={idx} className="flex items-center gap-4 border-b border-slate-100 last:border-0 pb-4 last:pb-0">
                   <span className="w-16 sm:w-20 text-xs sm:text-sm font-bold text-slate-400 uppercase tracking-wide">Row {idx + 1}</span>
-                  <input 
-                    type="number" min="0" disabled={isLocked}
-                    className="flex-1 bg-slate-50 border border-slate-200 rounded-lg px-4 py-3 font-mono text-lg sm:text-xl outline-none focus:ring-2 focus:ring-indigo-500 disabled:opacity-50"
-                    value={count || ''} placeholder="0"
-                    onChange={(e) => updateBlockCount(targetBlock.id, idx, e.target.value)}
-                  />
+                  <div className="flex-1 relative">
+                    <input 
+                      type="number" min="0" disabled={isLocked}
+                      className="w-full bg-slate-50 border border-slate-200 rounded-lg px-4 py-3 font-mono text-lg sm:text-xl outline-none focus:ring-2 focus:ring-indigo-500 disabled:opacity-50 pr-16"
+                      value={count || ''} placeholder="0"
+                      onChange={(e) => {
+                        const val = e.target.value === '' ? 0 : parseInt(e.target.value);
+                        if (val <= targetBlock.seatsPerRow) {
+                          updateBlockCount(targetBlock.id, idx, e.target.value);
+                        }
+                      }}
+                    />
+                    <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-slate-400 pointer-events-none">
+                      Max: {targetBlock.seatsPerRow}
+                    </span>
+                  </div>
                 </div>
               ))
             )}
