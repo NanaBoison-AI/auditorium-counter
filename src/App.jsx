@@ -4,7 +4,8 @@ import {
   ChevronRight, ChevronDown, Calculator, Armchair, FolderOpen, X, Calendar, 
   Check, FileBox, Download, Lock, Unlock, LogOut, Shield, 
   KeyRound, User, UserCog, Play, Power, Building2, Loader2, Wifi,
-  UserPlus, ArrowLeft, MousePointerClick, Eye, List, PlusCircle, Pencil, XCircle
+  UserPlus, ArrowLeft, MousePointerClick, Eye, List, PlusCircle, Pencil, XCircle,
+  FileDown
 } from 'lucide-react';
 
 // --- FIREBASE IMPORTS ---
@@ -35,7 +36,6 @@ import {
 } from "firebase/firestore";
 
 // --- FIREBASE CONFIGURATION ---
-// ⚠️ PASTE YOUR CONFIG FROM FIREBASE CONSOLE HERE ⚠️
 const firebaseConfig = {
   apiKey: "AIzaSyCI2WUsO5X5yPu80FCx6sY0bxEM9mwhyWs",
   authDomain: "auditoriumcounter.firebaseapp.com",
@@ -505,6 +505,49 @@ export default function App() {
     }
   };
 
+  const handleExportCSV = (e, event) => {
+    e.stopPropagation();
+    
+    // Construct CSV Data
+    let csvContent = "data:text/csv;charset=utf-8,";
+    
+    // Metadata Header
+    csvContent += `Event Name,${event.name}\n`;
+    csvContent += `Date,${event.createdAt ? new Date(event.createdAt.seconds * 1000).toLocaleString() : 'N/A'}\n`;
+    csvContent += `Organization,${event.orgName}\n\n`;
+    
+    // Table Headers
+    csvContent += "Section Type,Block Name,Row/Area Name,Count,Capacity\n";
+    
+    // Blocks Data
+    event.blocks.forEach(block => {
+      block.counts.forEach((count, idx) => {
+        csvContent += `Block,${block.name},Row ${idx + 1},${count},${block.seatsPerRow}\n`;
+      });
+    });
+    
+    // Extras Data
+    event.extras.forEach(extra => {
+      csvContent += `Extra Area,N/A,${extra.name},${extra.count || 0},N/A\n`;
+    });
+    
+    // Total
+    const totalCount = event.blocks.reduce((sum, b) => sum + (b.counts?.reduce((s, v) => s + (parseInt(v)||0), 0) || 0), 0) 
+                     + (event.extras?.reduce((s, e) => s + (parseInt(e.count)||0), 0) || 0);
+    const totalCap = event.blocks.reduce((sum, b) => sum + (b.rows * b.seatsPerRow), 0);
+    
+    csvContent += `\nTOTAL,,${totalCount},${totalCap}`;
+
+    // Download Logic
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement("a");
+    link.setAttribute("href", encodedUri);
+    link.setAttribute("download", `${event.name.replace(/\s+/g, '_')}_Report.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
   // --- ACTIONS: ADMIN SETUP & CREATE ---
   const addBlock = () => {
     if (!newBlock.name || !newBlock.rows || !newBlock.seatsPerRow) return;
@@ -756,6 +799,18 @@ export default function App() {
   const getGrandTotal = () => blocks.reduce((sum, block) => sum + getBlockTotal(block), 0) + getExtrasTotal();
   const getTotalCapacity = () => blocks.reduce((sum, block) => sum + getBlockCapacity(block), 0);
 
+  // New Helper for Health Colors
+  const getHealthColor = (total, capacity) => {
+    if (capacity === 0) return 'border-slate-200 shadow-sm hover:border-indigo-500'; // Default if no capacity
+    
+    const percent = (total / capacity) * 100;
+    
+    if (percent < 25) return 'border-red-400 bg-red-50 text-red-900 shadow-sm';
+    if (percent <= 50) return 'border-yellow-400 bg-yellow-50 text-yellow-900 shadow-sm';
+    if (percent <= 80) return 'border-emerald-300 bg-emerald-50 text-emerald-900 shadow-sm';
+    return 'border-green-600 bg-green-100 text-green-900 shadow-md ring-1 ring-green-500'; // Deep green > 80
+  };
+
   // --- VIEW RENDERING ---
 
   if (loading) {
@@ -822,6 +877,14 @@ export default function App() {
                     </div>
 
                     <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                      <button 
+                        onClick={(e) => handleExportCSV(e, event)}
+                        className="p-2 rounded-lg border border-slate-200 text-slate-400 hover:text-blue-600 hover:bg-blue-50 transition"
+                        title="Export to CSV"
+                      >
+                        <FileDown size={18} />
+                      </button>
+
                       <button 
                         onClick={(e) => handleAdminToggleLock(e, event)}
                         className={`p-2 rounded-lg border transition ${event.isLocked ? 'bg-red-50 border-red-200 text-red-600' : 'bg-white border-slate-200 text-slate-400 hover:text-slate-600'}`}
@@ -1157,16 +1220,16 @@ export default function App() {
           <button 
             key={block.id}
             onClick={() => handleCounterSelectBlock(block.id)}
-            className="w-full bg-white p-4 rounded-xl border border-slate-200 shadow-sm hover:border-indigo-500 hover:ring-1 hover:ring-indigo-500 transition flex items-center justify-between group"
+            className={`w-full bg-white p-4 rounded-xl border border-2 shadow-sm transition flex items-center justify-between group ${getHealthColor(getBlockTotal(block), getBlockCapacity(block))}`}
           >
             <div className="flex items-center gap-3">
-              <div className="bg-indigo-50 p-2 rounded-lg text-indigo-600"><Armchair size={20} /></div>
+              <div className="bg-white/50 p-2 rounded-lg"><Armchair size={20} className="text-slate-700" /></div>
               <div className="text-left">
                 <h3 className="font-bold text-slate-800">{block.name}</h3>
-                <p className="text-xs text-slate-500">{getBlockTotal(block)} / {getBlockCapacity(block)} counted</p>
+                <p className="text-xs font-medium opacity-80">{getBlockTotal(block)} / {getBlockCapacity(block)} counted</p>
               </div>
             </div>
-            <MousePointerClick className="text-slate-300 group-hover:text-indigo-500" />
+            <MousePointerClick className="text-slate-400 group-hover:text-slate-800" />
           </button>
         ))}
 
