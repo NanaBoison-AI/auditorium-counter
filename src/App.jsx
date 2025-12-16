@@ -1104,21 +1104,25 @@ export default function App() {
         <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-6 items-start">
           {blocks.map(block => {
             const isExpanded = expandedBlockIds.has(block.id);
+            const bTotal = getBlockTotal(block);
+            const bCap = getBlockCapacity(block);
+            const statusColor = getHealthColor(bTotal, bCap);
+
             return (
-              <div key={block.id} className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden flex flex-col">
+              <div key={block.id} className={`rounded-xl border-2 overflow-hidden flex flex-col ${statusColor} ${statusColor.includes('bg-') ? '' : 'bg-white'}`}>
                 <div 
-                  className="bg-slate-50 px-6 py-4 border-b border-slate-200 flex justify-between items-center cursor-pointer hover:bg-slate-100 transition"
+                  className="px-6 py-4 border-b border-black/5 flex justify-between items-center cursor-pointer transition hover:brightness-95"
                   onClick={() => toggleBlockExpansion(block.id)}
                 >
                   <div><h3 className="font-bold text-slate-800 flex items-center gap-2 text-base sm:text-lg"><Armchair size={18} className="text-indigo-600" />{block.name}</h3></div>
                   <div className="flex items-center gap-3">
-                    <div className="text-lg sm:text-xl font-mono font-bold text-slate-700">{getBlockTotal(block)} <span className="text-xs text-slate-400">/ {getBlockCapacity(block)}</span></div>
+                    <div className="text-lg sm:text-xl font-mono font-bold text-slate-700">{bTotal} <span className="text-xs text-slate-400">/ {bCap}</span></div>
                     <ChevronDown size={20} className={`text-slate-400 transition-transform duration-200 ${isExpanded ? 'rotate-180' : ''}`} />
                   </div>
                 </div>
                 
                 {isExpanded && (
-                  <div className="p-4 overflow-y-auto max-h-[400px] flex-1 border-t border-slate-100 animate-fade-in">
+                  <div className="p-4 overflow-y-auto max-h-[400px] flex-1 border-t border-black/5 animate-fade-in bg-white/50">
                     <div className="space-y-3">
                       {block.counts && block.counts.map((count, idx) => (
                         <div key={idx} className="flex items-center gap-3">
